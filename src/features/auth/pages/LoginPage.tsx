@@ -17,7 +17,7 @@ export function LoginPage() {
   const navigate = useNavigate();
   const { login, registerManager, isAuthenticated } = useAuth();
   const managerSignupEnabled =
-    String(import.meta.env.VITE_MANAGER_SIGNUP_ENABLED ?? "false").toLowerCase() === "true";
+    String(import.meta.env.VITE_MANAGER_SIGNUP_ENABLED ?? "true").toLowerCase() === "true";
   const defaultSignupCode = String(import.meta.env.VITE_MANAGER_SIGNUP_CODE ?? "");
 
   const [isRegisterMode, setIsRegisterMode] = useState(false);
