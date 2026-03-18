@@ -12,6 +12,7 @@ import {
   DialogTitle,
   FormControlLabel,
   IconButton,
+  Pagination,
   Stack,
   Switch,
   Table,
@@ -40,6 +41,7 @@ import { useAuth } from "../../auth/AuthContext";
 import type { AppRole } from "../../../types/access";
 import type { AdminUser } from "../../../types/platform";
 import { getApiErrorMessage } from "../../../utils/errors";
+import { useClientPagination } from "../../../utils/useClientPagination";
 
 type MembershipRow = {
   organization_id: number | null;
@@ -115,6 +117,13 @@ export function AdminUsersPage() {
       ),
     [allPropertiesQuery.data, organizations]
   );
+  const adminUserRows = Array.isArray(adminUsersQuery.data) ? adminUsersQuery.data : [];
+  const {
+    page,
+    setPage,
+    totalPages,
+    paginatedItems: paginatedAdminUsers,
+  } = useClientPagination(adminUserRows);
 
   function openCreateDialog() {
     setEditingUser(null);
@@ -269,7 +278,7 @@ export function AdminUsersPage() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {(adminUsersQuery.data ?? []).map((adminUser) => (
+              {paginatedAdminUsers.map((adminUser) => (
                 <TableRow key={adminUser.id} hover>
                   <TableCell>
                     <Typography variant="subtitle2">{adminUser.email}</Typography>
@@ -299,7 +308,7 @@ export function AdminUsersPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {!adminUsersQuery.isLoading && (adminUsersQuery.data?.length ?? 0) === 0 ? (
+              {!adminUsersQuery.isLoading && adminUserRows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={5}>
                     <Box sx={{ py: 3, textAlign: "center" }}>
@@ -312,6 +321,17 @@ export function AdminUsersPage() {
               ) : null}
             </TableBody>
           </Table>
+          {totalPages > 1 ? (
+            <Box sx={{ display: "flex", justifyContent: "center" }}>
+              <Pagination
+                count={totalPages}
+                page={page}
+                onChange={(_event, nextPage) => setPage(nextPage)}
+                color="primary"
+                shape="rounded"
+              />
+            </Box>
+          ) : null}
         </Stack>
       </SectionCard>
 

@@ -282,6 +282,10 @@ export async function uploadCsvImportRequest(
   return response.data;
 }
 
+export async function deleteCsvImportRequest(csvImportId: number): Promise<void> {
+  await apiClient.delete(`/api/v1/csv-imports/${csvImportId}`);
+}
+
 export async function getDashboardTasksRequest(
   params?: DashboardTaskListParams
 ): Promise<DashboardTask[]> {

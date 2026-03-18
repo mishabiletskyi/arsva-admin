@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControlLabel,
+  Pagination,
   Stack,
   Switch,
   Table,
@@ -29,6 +30,7 @@ import { SectionCard } from "../../../components/common/SectionCard";
 import { useAuth } from "../../auth/AuthContext";
 import type { Organization } from "../../../types/platform";
 import { getApiErrorMessage } from "../../../utils/errors";
+import { useClientPagination } from "../../../utils/useClientPagination";
 
 type OrganizationFormState = {
   name: string;
@@ -57,6 +59,13 @@ export function OrganizationsPage() {
   const [editingOrganization, setEditingOrganization] = useState<Organization | null>(null);
   const [formState, setFormState] = useState<OrganizationFormState>(EMPTY_FORM);
   const [submitError, setSubmitError] = useState("");
+  const organizationRows = organizations;
+  const {
+    page,
+    setPage,
+    totalPages,
+    paginatedItems: paginatedOrganizations,
+  } = useClientPagination(organizationRows);
 
   useEffect(() => {
     if (!dialogOpen) {
@@ -151,7 +160,7 @@ export function OrganizationsPage() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {organizations.map((organization) => (
+              {paginatedOrganizations.map((organization) => (
                 <TableRow key={organization.id} hover>
                   <TableCell>
                     <Typography variant="subtitle2">{organization.name}</Typography>
@@ -177,7 +186,7 @@ export function OrganizationsPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {organizations.length === 0 ? (
+              {organizationRows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={5}>
                     <Box sx={{ py: 3, textAlign: "center" }}>
@@ -190,6 +199,17 @@ export function OrganizationsPage() {
               ) : null}
             </TableBody>
           </Table>
+          {totalPages > 1 ? (
+            <Box sx={{ display: "flex", justifyContent: "center" }}>
+              <Pagination
+                count={totalPages}
+                page={page}
+                onChange={(_event, nextPage) => setPage(nextPage)}
+                color="primary"
+                shape="rounded"
+              />
+            </Box>
+          ) : null}
         </Stack>
       </SectionCard>
 

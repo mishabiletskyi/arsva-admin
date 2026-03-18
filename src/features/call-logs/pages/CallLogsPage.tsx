@@ -12,6 +12,7 @@ import {
   InputLabel,
   Link,
   MenuItem,
+  Pagination,
   Select,
   Stack,
   Table,
@@ -32,6 +33,7 @@ import { PageHeader } from "../../../components/common/PageHeader";
 import { SectionCard } from "../../../components/common/SectionCard";
 import { useAuth } from "../../auth/AuthContext";
 import type { CallLog, Tenant } from "../../../types/platform";
+import { useClientPagination } from "../../../utils/useClientPagination";
 
 function FieldRow({
   label,
@@ -114,9 +116,17 @@ export function CallLogsPage() {
     enabled: selectedCallLogId !== null,
   });
 
+  const callLogRows = Array.isArray(callLogsQuery.data) ? callLogsQuery.data : [];
+  const {
+    page,
+    setPage,
+    totalPages,
+    paginatedItems: paginatedCallLogs,
+  } = useClientPagination(callLogRows);
+
   const selectedCallLog: CallLog | null =
     selectedCallLogQuery.data ??
-    (callLogsQuery.data ?? []).find((item) => item.id === selectedCallLogId) ??
+    callLogRows.find((item) => item.id === selectedCallLogId) ??
     null;
 
   const tenantMap = useMemo(
@@ -212,7 +222,7 @@ export function CallLogsPage() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {(callLogsQuery.data ?? []).map((callLog) => (
+              {paginatedCallLogs.map((callLog) => (
                 <TableRow key={callLog.id} hover>
                   <TableCell>{new Date(callLog.created_at).toLocaleString()}</TableCell>
                   <TableCell>
@@ -255,7 +265,7 @@ export function CallLogsPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {!callLogsQuery.isLoading && (callLogsQuery.data?.length ?? 0) === 0 ? (
+              {!callLogsQuery.isLoading && callLogRows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8}>
                     <Box sx={{ py: 3, textAlign: "center" }}>
@@ -268,6 +278,17 @@ export function CallLogsPage() {
               ) : null}
             </TableBody>
           </Table>
+          {totalPages > 1 ? (
+            <Box sx={{ display: "flex", justifyContent: "center" }}>
+              <Pagination
+                count={totalPages}
+                page={page}
+                onChange={(_event, nextPage) => setPage(nextPage)}
+                color="primary"
+                shape="rounded"
+              />
+            </Box>
+          ) : null}
         </Stack>
       </SectionCard>
 

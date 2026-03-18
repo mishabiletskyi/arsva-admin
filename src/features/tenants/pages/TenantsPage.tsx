@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Box,
@@ -13,6 +13,7 @@ import {
   FormControl,
   FormControlLabel,
   InputLabel,
+  Pagination,
   Select,
   Stack,
   Switch,
@@ -29,18 +30,16 @@ import { useNavigate } from "react-router-dom";
 import {
   archiveTenantRequest,
   createTenantRequest,
-  getTenantEligibilityRequest,
   getTenantsRequest,
   restoreTenantRequest,
-  suppressTenantRequest,
-  unsuppressTenantRequest,
   updateTenantRequest,
 } from "../../../api/platform.api";
 import { PageHeader } from "../../../components/common/PageHeader";
 import { SectionCard } from "../../../components/common/SectionCard";
 import { useAuth } from "../../auth/AuthContext";
-import type { Tenant, TenantEligibility } from "../../../types/platform";
+import type { Tenant } from "../../../types/platform";
 import { getApiErrorMessage } from "../../../utils/errors";
+import { useClientPagination } from "../../../utils/useClientPagination";
 
 type TenantFormState = {
   organization_id: number | null;
@@ -86,24 +85,6 @@ const EMPTY_FORM: TenantFormState = {
   notes: "",
 };
 
-function getReadinessTone(
-  eligibility: TenantEligibility | undefined
-): "success" | "warning" | "default" {
-  if (!eligibility) {
-    return "default";
-  }
-
-  return eligibility.can_call_now ? "success" : "warning";
-}
-
-function getReadinessLabel(eligibility: TenantEligibility | undefined): string {
-  if (!eligibility) {
-    return "Unknown";
-  }
-
-  return eligibility.can_call_now ? "Ready to call" : "Blocked";
-}
-
 function isE164PhoneNumber(value: string): boolean {
   return /^\+[1-9]\d{7,14}$/.test(value.trim());
 }
@@ -138,34 +119,6 @@ export function TenantsPage() {
       }),
     enabled: scope.organizationId !== null,
   });
-
-  const eligibilityQuery = useQuery({
-    queryKey: [
-      "tenant-eligibility",
-      scope.organizationId,
-      scope.propertyId,
-      includeArchived,
-    ],
-    queryFn: () =>
-      getTenantEligibilityRequest({
-        organization_id: scope.organizationId ?? undefined,
-        property_id: scope.propertyId ?? undefined,
-        include_archived: includeArchived,
-        limit: 200,
-      }),
-    enabled: scope.organizationId !== null && scope.propertyId !== null,
-  });
-
-  const eligibilityByTenantId = useMemo(
-    () =>
-      new Map(
-        (eligibilityQuery.data ?? []).map((item) => [
-          item.tenant_id,
-          item,
-        ])
-      ),
-    [eligibilityQuery.data]
-  );
 
   useEffect(() => {
     if (!dialogOpen) {
@@ -247,10 +200,7 @@ export function TenantsPage() {
       return createTenantRequest(payload);
     },
     onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["tenants"] }),
-        queryClient.invalidateQueries({ queryKey: ["tenant-eligibility"] }),
-      ]);
+      await queryClient.invalidateQueries({ queryKey: ["tenants"] });
       setDialogOpen(false);
       setEditingTenant(null);
       setSubmitError("");
@@ -264,10 +214,7 @@ export function TenantsPage() {
     mutationFn: (tenantId: number) => archiveTenantRequest(tenantId),
     onSuccess: async () => {
       setActionError("");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["tenants"] }),
-        queryClient.invalidateQueries({ queryKey: ["tenant-eligibility"] }),
-      ]);
+      await queryClient.invalidateQueries({ queryKey: ["tenants"] });
     },
     onError: (error) => {
       setActionError(getApiErrorMessage(error, "Failed to archive tenant."));
@@ -278,45 +225,20 @@ export function TenantsPage() {
     mutationFn: (tenantId: number) => restoreTenantRequest(tenantId),
     onSuccess: async () => {
       setActionError("");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["tenants"] }),
-        queryClient.invalidateQueries({ queryKey: ["tenant-eligibility"] }),
-      ]);
+      await queryClient.invalidateQueries({ queryKey: ["tenants"] });
     },
     onError: (error) => {
       setActionError(getApiErrorMessage(error, "Failed to restore tenant."));
     },
   });
 
-  const suppressMutation = useMutation({
-    mutationFn: (tenantId: number) => suppressTenantRequest(tenantId),
-    onSuccess: async () => {
-      setActionError("");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["tenants"] }),
-        queryClient.invalidateQueries({ queryKey: ["tenant-eligibility"] }),
-      ]);
-    },
-    onError: (error) => {
-      setActionError(getApiErrorMessage(error, "Failed to suppress tenant."));
-    },
-  });
-
-  const unsuppressMutation = useMutation({
-    mutationFn: (tenantId: number) => unsuppressTenantRequest(tenantId),
-    onSuccess: async () => {
-      setActionError("");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["tenants"] }),
-        queryClient.invalidateQueries({ queryKey: ["tenant-eligibility"] }),
-      ]);
-    },
-    onError: (error) => {
-      setActionError(getApiErrorMessage(error, "Failed to unsuppress tenant."));
-    },
-  });
-
-  const tenantRows = useMemo(() => tenantsQuery.data ?? [], [tenantsQuery.data]);
+  const tenantRows = Array.isArray(tenantsQuery.data) ? tenantsQuery.data : [];
+  const {
+    page,
+    setPage,
+    totalPages,
+    paginatedItems: paginatedTenants,
+  } = useClientPagination(tenantRows);
 
   function openCreateDialog() {
     setEditingTenant(null);
@@ -344,8 +266,8 @@ export function TenantsPage() {
     }
 
     const daysLate = Number(formState.days_late);
-    if (!Number.isInteger(daysLate) || daysLate < 3 || daysLate > 10) {
-      setSubmitError("Days late must be an integer between 3 and 10.");
+    if (!Number.isInteger(daysLate) || daysLate < 0) {
+      setSubmitError("Days late must be a whole number starting from 0.");
       return;
     }
 
@@ -424,7 +346,7 @@ export function TenantsPage() {
       ) : null}
 
       <Alert severity="info" sx={{ mb: 3 }}>
-        Tenant deletion is archive-based. Use restore for archived records. Pilot call eligibility uses days late range 3-10.
+        Tenant removal is archive-based. Restore brings an archived tenant back. Call rules are managed on the Call Policy page.
       </Alert>
 
       {actionError ? (
@@ -458,125 +380,65 @@ export function TenantsPage() {
                 <TableCell>Name</TableCell>
                 <TableCell>Phone</TableCell>
                 <TableCell>Days Late</TableCell>
-                <TableCell>Readiness</TableCell>
-                <TableCell>Status</TableCell>
+                <TableCell>Record</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {tenantRows.map((tenant) => {
-                const eligibility = eligibilityByTenantId.get(tenant.id);
-                const blockedReasons = eligibility?.blocked_reasons ?? [];
-
-                return (
-                  <TableRow key={tenant.id} hover>
-                    <TableCell>
-                      <Typography variant="subtitle2">
-                        {[tenant.first_name, tenant.last_name].filter(Boolean).join(" ")}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        {tenant.property_name || "No property label"}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>{tenant.phone_number}</TableCell>
-                    <TableCell>{tenant.days_late}</TableCell>
-                    <TableCell>
-                      <Stack spacing={0.75}>
-                        <Chip
-                          size="small"
-                          label={getReadinessLabel(eligibility)}
-                          color={getReadinessTone(eligibility)}
-                          variant="outlined"
-                        />
-                        {blockedReasons.length > 0 ? (
-                          <Typography variant="caption" color="text.secondary">
-                            {blockedReasons.join(", ")}
-                          </Typography>
-                        ) : null}
-                      </Stack>
-                    </TableCell>
-                    <TableCell>
-                      <Stack direction="row" spacing={1} flexWrap="wrap">
-                        <Chip
-                          size="small"
-                          label={tenant.consent_status ? "Consented" : "Pending consent"}
-                          color={tenant.consent_status ? "success" : "default"}
-                          variant={tenant.consent_status ? "filled" : "outlined"}
-                        />
-                        {tenant.opt_out_flag ? (
-                          <Chip size="small" label="Opt-out" color="warning" />
-                        ) : null}
-                        {tenant.is_suppressed ? (
-                          <Chip size="small" label="Suppressed" color="warning" />
-                        ) : null}
-                        {tenant.eviction_status ? (
-                          <Chip size="small" label="Eviction" color="error" />
-                        ) : null}
-                        {tenant.is_archived ? (
-                          <Chip size="small" label="Archived" color="default" />
-                        ) : null}
-                      </Stack>
-                    </TableCell>
-                    <TableCell align="right">
-                      <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap">
+              {paginatedTenants.map((tenant) => (
+                <TableRow key={tenant.id} hover>
+                  <TableCell>
+                    <Typography variant="subtitle2">
+                      {[tenant.first_name, tenant.last_name].filter(Boolean).join(" ")}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {tenant.property_name || "No property label"}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>{tenant.phone_number}</TableCell>
+                  <TableCell>{tenant.days_late}</TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      label={tenant.is_archived ? "Archived" : "Active"}
+                      color={tenant.is_archived ? "default" : "success"}
+                      variant={tenant.is_archived ? "outlined" : "filled"}
+                    />
+                  </TableCell>
+                  <TableCell align="right">
+                    <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap">
+                      <Button
+                        size="small"
+                        onClick={() => openEditDialog(tenant)}
+                        disabled={!canEditCurrentScope || tenant.is_archived}
+                      >
+                        Edit
+                      </Button>
+                      {tenant.is_archived ? (
                         <Button
                           size="small"
-                          onClick={() => openEditDialog(tenant)}
-                          disabled={!canEditCurrentScope || tenant.is_archived}
+                          onClick={() => restoreMutation.mutate(tenant.id)}
+                          disabled={!canEditCurrentScope || restoreMutation.isPending}
                         >
-                          Edit
+                          Restore
                         </Button>
-                        {tenant.is_suppressed ? (
-                          <Button
-                            size="small"
-                            onClick={() => unsuppressMutation.mutate(tenant.id)}
-                            disabled={
-                              !canEditCurrentScope ||
-                              tenant.is_archived ||
-                              unsuppressMutation.isPending
-                            }
-                          >
-                            Unsuppress
-                          </Button>
-                        ) : (
-                          <Button
-                            size="small"
-                            onClick={() => suppressMutation.mutate(tenant.id)}
-                            disabled={
-                              !canEditCurrentScope ||
-                              tenant.is_archived ||
-                              suppressMutation.isPending
-                            }
-                          >
-                            Suppress
-                          </Button>
-                        )}
-                        {tenant.is_archived ? (
-                          <Button
-                            size="small"
-                            onClick={() => restoreMutation.mutate(tenant.id)}
-                            disabled={!canEditCurrentScope || restoreMutation.isPending}
-                          >
-                            Restore
-                          </Button>
-                        ) : (
-                          <Button
-                            size="small"
-                            color="inherit"
-                            onClick={() => archiveMutation.mutate(tenant.id)}
-                            disabled={!canEditCurrentScope || archiveMutation.isPending}
-                          >
-                            Archive
-                          </Button>
-                        )}
-                      </Stack>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
+                      ) : (
+                        <Button
+                          size="small"
+                          color="inherit"
+                          onClick={() => archiveMutation.mutate(tenant.id)}
+                          disabled={!canEditCurrentScope || archiveMutation.isPending}
+                        >
+                          Archive
+                        </Button>
+                      )}
+                    </Stack>
+                  </TableCell>
+                </TableRow>
+              ))}
               {!tenantsQuery.isLoading && tenantRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6}>
+                  <TableCell colSpan={5}>
                     <Box sx={{ py: 3, textAlign: "center" }}>
                       <Typography color="text.secondary">
                         No tenants found for the selected scope.
@@ -587,6 +449,17 @@ export function TenantsPage() {
               ) : null}
             </TableBody>
           </Table>
+          {totalPages > 1 ? (
+            <Box sx={{ display: "flex", justifyContent: "center" }}>
+              <Pagination
+                count={totalPages}
+                page={page}
+                onChange={(_event, nextPage) => setPage(nextPage)}
+                color="primary"
+                shape="rounded"
+              />
+            </Box>
+          ) : null}
         </Stack>
       </SectionCard>
 
@@ -668,8 +541,8 @@ export function TenantsPage() {
                   }))
                 }
                 fullWidth
-                inputProps={{ min: 3, max: 10, step: 1 }}
-                helperText="Pilot range: 3-10"
+                inputProps={{ min: 0, step: 1 }}
+                helperText="Used by call policy."
               />
             </Stack>
 
@@ -702,64 +575,20 @@ export function TenantsPage() {
               />
             </Stack>
 
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap">
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={formState.consent_status}
-                    onChange={(event) =>
-                      setFormState((currentState) => ({
-                        ...currentState,
-                        consent_status: event.target.checked,
-                      }))
-                    }
-                  />
-                }
-                label="Consent received"
-              />
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={formState.opt_out_flag}
-                    onChange={(event) =>
-                      setFormState((currentState) => ({
-                        ...currentState,
-                        opt_out_flag: event.target.checked,
-                      }))
-                    }
-                  />
-                }
-                label="Opt-out"
-              />
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={formState.eviction_status}
-                    onChange={(event) =>
-                      setFormState((currentState) => ({
-                        ...currentState,
-                        eviction_status: event.target.checked,
-                      }))
-                    }
-                  />
-                }
-                label="Eviction"
-              />
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={formState.is_suppressed}
-                    onChange={(event) =>
-                      setFormState((currentState) => ({
-                        ...currentState,
-                        is_suppressed: event.target.checked,
-                      }))
-                    }
-                  />
-                }
-                label="Suppressed"
-              />
-            </Stack>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={formState.consent_status}
+                  onChange={(event) =>
+                    setFormState((currentState) => ({
+                      ...currentState,
+                      consent_status: event.target.checked,
+                    }))
+                  }
+                />
+              }
+              label="Consent received"
+            />
 
             <Box>
               <Button
@@ -868,6 +697,51 @@ export function TenantsPage() {
                   }
                   fullWidth
                 />
+
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap">
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={formState.opt_out_flag}
+                        onChange={(event) =>
+                          setFormState((currentState) => ({
+                            ...currentState,
+                            opt_out_flag: event.target.checked,
+                          }))
+                        }
+                      />
+                    }
+                    label="Opt-out"
+                  />
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={formState.eviction_status}
+                        onChange={(event) =>
+                          setFormState((currentState) => ({
+                            ...currentState,
+                            eviction_status: event.target.checked,
+                          }))
+                        }
+                      />
+                    }
+                    label="Eviction"
+                  />
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={formState.is_suppressed}
+                        onChange={(event) =>
+                          setFormState((currentState) => ({
+                            ...currentState,
+                            is_suppressed: event.target.checked,
+                          }))
+                        }
+                      />
+                    }
+                    label="Suppressed"
+                  />
+                </Stack>
               </Stack>
             </Collapse>
           </Stack>

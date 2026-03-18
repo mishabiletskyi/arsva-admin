@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   Chip,
+  Pagination,
   Stack,
   Table,
   TableBody,
@@ -14,6 +15,7 @@ import {
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  deleteCsvImportRequest,
   getCsvImportsRequest,
   uploadCsvImportRequest,
 } from "../../../api/platform.api";
@@ -22,6 +24,7 @@ import { SectionCard } from "../../../components/common/SectionCard";
 import { useAuth } from "../../auth/AuthContext";
 import { getApiErrorMessage } from "../../../utils/errors";
 import type { CsvImport, CsvImportRowError } from "../../../types/platform";
+import { useClientPagination } from "../../../utils/useClientPagination";
 
 function getStatusColor(status: string): "default" | "success" | "warning" | "error" {
   switch (status) {
@@ -37,18 +40,17 @@ function getStatusColor(status: string): "default" | "success" | "warning" | "er
   }
 }
 
-function getStatusDescription(status: string): string {
+function getStatusLabel(status: string): string {
   switch (status) {
     case "completed":
-      return "All rows were imported successfully.";
     case "completed_with_errors":
-      return "Some rows were imported and some were skipped.";
+      return "Done";
     case "processing":
-      return "The import is still being processed.";
+      return "Processing";
     case "failed":
-      return "The import could not be completed.";
+      return "Error";
     default:
-      return "Unknown import status.";
+      return "Saved";
   }
 }
 
@@ -65,12 +67,10 @@ function getImportErrors(csvImport: CsvImport): CsvImportRowError[] {
 
 export function ImportsPage() {
   const queryClient = useQueryClient();
-  const {
-    scope,
-    canEditCurrentScope,
-  } = useAuth();
+  const { scope, canEditCurrentScope } = useAuth();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState("");
+  const [historyError, setHistoryError] = useState("");
 
   const importsQuery = useQuery({
     queryKey: ["csv-imports", scope.organizationId, scope.propertyId],
@@ -105,6 +105,25 @@ export function ImportsPage() {
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (csvImportId: number) => deleteCsvImportRequest(csvImportId),
+    onSuccess: async () => {
+      setHistoryError("");
+      await queryClient.invalidateQueries({ queryKey: ["csv-imports"] });
+    },
+    onError: (error) => {
+      setHistoryError(getApiErrorMessage(error, "Failed to delete CSV upload."));
+    },
+  });
+
+  const importRows = Array.isArray(importsQuery.data) ? importsQuery.data : [];
+  const {
+    page,
+    setPage,
+    totalPages,
+    paginatedItems: paginatedImports,
+  } = useClientPagination(importRows);
+
   return (
     <>
       <PageHeader
@@ -130,7 +149,7 @@ export function ImportsPage() {
       ) : null}
 
       <Alert severity="info" sx={{ mb: 3 }}>
-        Use this page for bulk tenant uploads. If an import finishes with errors, the valid rows are kept and the skipped rows are listed below.
+        Deleting a CSV removes only the upload history. Imported tenant data stays in the database.
       </Alert>
 
       <Box
@@ -144,7 +163,11 @@ export function ImportsPage() {
           <Stack spacing={2}>
             <Typography variant="h6">Upload CSV</Typography>
             {uploadError ? <Alert severity="error">{uploadError}</Alert> : null}
-            <Button variant="outlined" component="label" disabled={!canEditCurrentScope || !scope.propertyId}>
+            <Button
+              variant="outlined"
+              component="label"
+              disabled={!canEditCurrentScope || !scope.propertyId}
+            >
               {selectedFile ? selectedFile.name : "Choose CSV file"}
               <input
                 hidden
@@ -167,7 +190,12 @@ export function ImportsPage() {
             <Button
               variant="contained"
               onClick={() => uploadMutation.mutate()}
-              disabled={!selectedFile || !canEditCurrentScope || !scope.propertyId || uploadMutation.isPending}
+              disabled={
+                !selectedFile ||
+                !canEditCurrentScope ||
+                !scope.propertyId ||
+                uploadMutation.isPending
+              }
             >
               {uploadMutation.isPending ? "Uploading..." : "Upload CSV"}
             </Button>
@@ -177,6 +205,7 @@ export function ImportsPage() {
         <SectionCard>
           <Stack spacing={2}>
             <Typography variant="h6">Import history</Typography>
+            {historyError ? <Alert severity="error">{historyError}</Alert> : null}
             <Table size="small">
               <TableHead>
                 <TableRow>
@@ -184,10 +213,11 @@ export function ImportsPage() {
                   <TableCell>Status</TableCell>
                   <TableCell>Rows</TableCell>
                   <TableCell>Created</TableCell>
+                  <TableCell align="right">Actions</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(importsQuery.data ?? []).map((csvImport) => (
+                {paginatedImports.map((csvImport) => (
                   <TableRow key={csvImport.id} hover>
                     <TableCell>
                       <Typography variant="subtitle2">{csvImport.original_file_name}</Typography>
@@ -214,13 +244,10 @@ export function ImportsPage() {
                     <TableCell>
                       <Chip
                         size="small"
-                        label={csvImport.status}
+                        label={getStatusLabel(csvImport.status)}
                         color={getStatusColor(csvImport.status)}
                         variant="outlined"
                       />
-                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
-                        {getStatusDescription(csvImport.status)}
-                      </Typography>
                     </TableCell>
                     <TableCell>
                       <Typography variant="body2">Total: {csvImport.total_rows}</Typography>
@@ -228,11 +255,21 @@ export function ImportsPage() {
                       <Typography variant="body2">Failed: {csvImport.failed_rows}</Typography>
                     </TableCell>
                     <TableCell>{new Date(csvImport.created_at).toLocaleString()}</TableCell>
+                    <TableCell align="right">
+                      <Button
+                        size="small"
+                        color="inherit"
+                        onClick={() => deleteMutation.mutate(csvImport.id)}
+                        disabled={!canEditCurrentScope || deleteMutation.isPending}
+                      >
+                        Delete
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
-                {!importsQuery.isLoading && (importsQuery.data?.length ?? 0) === 0 ? (
+                {!importsQuery.isLoading && importRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4}>
+                    <TableCell colSpan={5}>
                       <Box sx={{ py: 3, textAlign: "center" }}>
                         <Typography color="text.secondary">
                           No imports found for the selected scope.
@@ -243,6 +280,17 @@ export function ImportsPage() {
                 ) : null}
               </TableBody>
             </Table>
+            {totalPages > 1 ? (
+              <Box sx={{ display: "flex", justifyContent: "center" }}>
+                <Pagination
+                  count={totalPages}
+                  page={page}
+                  onChange={(_event, nextPage) => setPage(nextPage)}
+                  color="primary"
+                  shape="rounded"
+                />
+              </Box>
+            ) : null}
           </Stack>
         </SectionCard>
       </Box>

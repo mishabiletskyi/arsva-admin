@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Box,
@@ -10,20 +10,19 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControlLabel,
   FormControl,
   InputLabel,
   MenuItem,
+  Pagination,
   Select,
   Stack,
-  Switch,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableContainer,
   TableRow,
-  TextField,
+  TableSortLabel,
   Typography,
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -31,7 +30,6 @@ import { useNavigate } from "react-router-dom";
 import {
   createOutboundCallJobRequest,
   getOutboundCallJobsRequest,
-  getTenantEligibilityRequest,
   getTenantsRequest,
 } from "../../../api/platform.api";
 import { PageHeader } from "../../../components/common/PageHeader";
@@ -39,6 +37,23 @@ import { SectionCard } from "../../../components/common/SectionCard";
 import { useAuth } from "../../auth/AuthContext";
 import type { OutboundCallJob, Tenant } from "../../../types/platform";
 import { getApiErrorMessage } from "../../../utils/errors";
+import { useClientPagination } from "../../../utils/useClientPagination";
+
+function asNumberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is number => typeof item === "number");
+}
+
+function getJobResultSummary(job: OutboundCallJob): Record<string, unknown> {
+  if (!job.result_summary || typeof job.result_summary !== "object") {
+    return {};
+  }
+
+  return job.result_summary as Record<string, unknown>;
+}
 
 function getJobStatusTone(status: string | null): "default" | "warning" | "success" | "error" {
   if (status === "completed" || status === "dispatched") {
@@ -56,21 +71,42 @@ function getJobStatusTone(status: string | null): "default" | "warning" | "succe
   return "default";
 }
 
+function getSelectedTenantsCount(job: OutboundCallJob): number {
+  const tenantIds = asNumberArray(job.tenant_ids);
+
+  if (tenantIds.length > 0) {
+    return tenantIds.length;
+  }
+
+  return job.total_candidates ?? 0;
+}
+
+function getStartedCallsCount(job: OutboundCallJob): number {
+  const dispatchedCalls = getJobResultSummary(job).dispatched_calls;
+
+  return Array.isArray(dispatchedCalls) ? dispatchedCalls.length : 0;
+}
+
+function getDispatchErrorCount(job: OutboundCallJob): number {
+  const dispatchErrors = getJobResultSummary(job).dispatch_errors;
+
+  return Array.isArray(dispatchErrors) ? dispatchErrors.length : 0;
+}
+
+function getTenantFullName(tenant: Tenant): string {
+  return [tenant.first_name, tenant.last_name].filter(Boolean).join(" ").trim();
+}
+
+const TENANTS_PER_PAGE = 7;
+
 export function OutboundCallsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const {
-    canEditCurrentScope,
-    scope,
-    properties,
-    setSelectedProperty,
-  } = useAuth();
+  const { canEditCurrentScope, scope, properties, setSelectedProperty } = useAuth();
   const [selectedTenantIds, setSelectedTenantIds] = useState<number[]>([]);
-  const [assistantId, setAssistantId] = useState("");
-  const [phoneNumberId, setPhoneNumberId] = useState("");
-  const [maxTenants, setMaxTenants] = useState("50");
-  const [dryRun, setDryRun] = useState(false);
-  const [showAdvancedDispatch, setShowAdvancedDispatch] = useState(false);
+  const [tenantSortField, setTenantSortField] = useState<"tenant" | "days_late">("tenant");
+  const [tenantSortDirection, setTenantSortDirection] = useState<"asc" | "desc">("asc");
+  const [tenantPage, setTenantPage] = useState(1);
   const [showTechnicalJobDetails, setShowTechnicalJobDetails] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [selectedJob, setSelectedJob] = useState<OutboundCallJob | null>(null);
@@ -79,18 +115,6 @@ export function OutboundCallsPage() {
     queryKey: ["outbound", "tenants", scope.organizationId, scope.propertyId],
     queryFn: () =>
       getTenantsRequest({
-        organization_id: scope.organizationId ?? undefined,
-        property_id: scope.propertyId ?? undefined,
-        include_archived: false,
-        limit: 200,
-      }),
-    enabled: scope.organizationId !== null && scope.propertyId !== null,
-  });
-
-  const eligibilityQuery = useQuery({
-    queryKey: ["outbound", "eligibility", scope.organizationId, scope.propertyId],
-    queryFn: () =>
-      getTenantEligibilityRequest({
         organization_id: scope.organizationId ?? undefined,
         property_id: scope.propertyId ?? undefined,
         include_archived: false,
@@ -111,29 +135,53 @@ export function OutboundCallsPage() {
     refetchInterval: 15_000,
   });
 
-  const eligibilityByTenantId = useMemo(
-    () =>
-      new Map((eligibilityQuery.data ?? []).map((item) => [item.tenant_id, item])),
-    [eligibilityQuery.data]
+  const tenantRows = (Array.isArray(tenantsQuery.data) ? tenantsQuery.data : []).filter(
+    (tenant) => !tenant.is_archived
   );
+  const jobRows = Array.isArray(jobsQuery.data) ? jobsQuery.data : [];
+  const sortedTenantRows = [...tenantRows].sort((leftTenant, rightTenant) => {
+    const directionMultiplier = tenantSortDirection === "asc" ? 1 : -1;
 
-  const eligibleTenantIds = useMemo(
-    () =>
-      (eligibilityQuery.data ?? [])
-        .filter((item) => item.can_call_now)
-        .map((item) => item.tenant_id),
-    [eligibilityQuery.data]
+    if (tenantSortField === "days_late") {
+      return (leftTenant.days_late - rightTenant.days_late) * directionMultiplier;
+    }
+
+    return (
+      getTenantFullName(leftTenant).localeCompare(getTenantFullName(rightTenant), undefined, {
+        sensitivity: "base",
+      }) * directionMultiplier
+    );
+  });
+  const totalTenantPages = Math.max(1, Math.ceil(sortedTenantRows.length / TENANTS_PER_PAGE));
+  const paginatedTenantRows = sortedTenantRows.slice(
+    (tenantPage - 1) * TENANTS_PER_PAGE,
+    tenantPage * TENANTS_PER_PAGE
   );
-  const eligibleTenantIdSet = useMemo(
-    () => new Set(eligibleTenantIds),
-    [eligibleTenantIds]
-  );
-  const hasEligibilityData = (eligibilityQuery.data?.length ?? 0) > 0;
+  const {
+    page: jobsPage,
+    setPage: setJobsPage,
+    totalPages: totalJobPages,
+    paginatedItems: paginatedJobRows,
+  } = useClientPagination(jobRows);
 
   useEffect(() => {
-    const visibleIds = new Set((tenantsQuery.data ?? []).map((tenant) => tenant.id));
-    setSelectedTenantIds((current) => current.filter((id) => visibleIds.has(id)));
+    const visibleIds = new Set(tenantRows.map((tenant) => tenant.id));
+    setSelectedTenantIds((current) => {
+      const next = current.filter((id) => visibleIds.has(id));
+
+      if (next.length === current.length && next.every((id, index) => id === current[index])) {
+        return current;
+      }
+
+      return next;
+    });
   }, [tenantsQuery.data]);
+
+  useEffect(() => {
+    if (tenantPage > totalTenantPages) {
+      setTenantPage(totalTenantPages);
+    }
+  }, [tenantPage, totalTenantPages]);
 
   const dispatchMutation = useMutation({
     mutationFn: async () => {
@@ -145,36 +193,19 @@ export function OutboundCallsPage() {
         throw new Error("Select at least one tenant.");
       }
 
-      const tenantIdsForDispatch = hasEligibilityData
-        ? selectedTenantIds.filter((tenantId) => eligibleTenantIdSet.has(tenantId))
-        : selectedTenantIds;
-      if (tenantIdsForDispatch.length === 0) {
-        throw new Error("All selected tenants are currently blocked by call policy.");
-      }
-
-      const parsedMax = showAdvancedDispatch
-        ? Number(maxTenants)
-        : Math.min(Math.max(tenantIdsForDispatch.length, 1), 50);
-      if (!Number.isInteger(parsedMax) || parsedMax < 1 || parsedMax > 50) {
-        throw new Error("Max tenants must be between 1 and 50.");
-      }
-
       return createOutboundCallJobRequest({
         organization_id: scope.organizationId,
         property_id: scope.propertyId,
-        tenant_ids: tenantIdsForDispatch,
-        assistant_id: showAdvancedDispatch ? assistantId.trim() || undefined : undefined,
-        phone_number_id: showAdvancedDispatch ? phoneNumberId.trim() || undefined : undefined,
-        dry_run: showAdvancedDispatch ? dryRun : false,
+        tenant_ids: selectedTenantIds,
+        dry_run: false,
         trigger_mode: "manual",
-        max_tenants: parsedMax,
+        max_tenants: Math.min(Math.max(selectedTenantIds.length, 1), 50),
       });
     },
     onSuccess: async () => {
       setSubmitError("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["outbound", "jobs"] }),
-        queryClient.invalidateQueries({ queryKey: ["outbound", "eligibility"] }),
         queryClient.invalidateQueries({ queryKey: ["call-logs"] }),
         queryClient.invalidateQueries({ queryKey: ["dashboard", "call-logs"] }),
       ]);
@@ -198,13 +229,27 @@ export function OutboundCallsPage() {
     });
   }
 
-  function selectEligible() {
-    const visibleTenantIds = new Set((tenantsQuery.data ?? []).map((tenant) => tenant.id));
-    setSelectedTenantIds(eligibleTenantIds.filter((id) => visibleTenantIds.has(id)));
+  function selectAll() {
+    setSelectedTenantIds(tenantRows.map((tenant) => tenant.id));
   }
 
   function clearSelection() {
     setSelectedTenantIds([]);
+  }
+
+  function handleTenantSort(field: "tenant" | "days_late") {
+    setTenantSortField((currentField) => {
+      if (currentField === field) {
+        setTenantSortDirection((currentDirection) =>
+          currentDirection === "asc" ? "desc" : "asc"
+        );
+        return currentField;
+      }
+
+      setTenantSortDirection("asc");
+      return field;
+    });
+    setTenantPage(1);
   }
 
   return (
@@ -280,6 +325,10 @@ export function OutboundCallsPage() {
         </Alert>
       ) : null}
 
+      <Alert severity="info" sx={{ mb: 3 }}>
+        Pick tenants and start calls. Call rules belong on the Call Policy page, not in extra frontend statuses.
+      </Alert>
+
       <Box
         sx={{
           display: "grid",
@@ -297,8 +346,8 @@ export function OutboundCallsPage() {
             >
               <Typography variant="h6">Tenant selection</Typography>
               <Stack direction="row" spacing={1}>
-                <Button size="small" onClick={selectEligible}>
-                  Select eligible
+                <Button size="small" onClick={selectAll}>
+                  Select all
                 </Button>
                 <Button size="small" color="inherit" onClick={clearSelection}>
                   Clear
@@ -307,7 +356,7 @@ export function OutboundCallsPage() {
             </Stack>
 
             <Typography variant="body2" color="text.secondary">
-              Selected: {selectedTenantIds.length}. Pilot compliance: days late 3-10, max batch size 50.
+              Selected: {selectedTenantIds.length} of {tenantRows.length}. Page {tenantPage} shows up to {TENANTS_PER_PAGE} tenants.
             </Typography>
 
             <TableContainer sx={{ overflowX: "auto" }}>
@@ -315,72 +364,51 @@ export function OutboundCallsPage() {
                 <TableHead>
                   <TableRow>
                     <TableCell padding="checkbox" />
-                    <TableCell>Tenant</TableCell>
+                    <TableCell sortDirection={tenantSortField === "tenant" ? tenantSortDirection : false}>
+                      <TableSortLabel
+                        active={tenantSortField === "tenant"}
+                        direction={tenantSortField === "tenant" ? tenantSortDirection : "asc"}
+                        onClick={() => handleTenantSort("tenant")}
+                      >
+                        Tenant
+                      </TableSortLabel>
+                    </TableCell>
                     <TableCell>Phone</TableCell>
-                    <TableCell>Days Late</TableCell>
-                    <TableCell>Readiness</TableCell>
+                    <TableCell sortDirection={tenantSortField === "days_late" ? tenantSortDirection : false}>
+                      <TableSortLabel
+                        active={tenantSortField === "days_late"}
+                        direction={tenantSortField === "days_late" ? tenantSortDirection : "asc"}
+                        onClick={() => handleTenantSort("days_late")}
+                      >
+                        Days Late
+                      </TableSortLabel>
+                    </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(tenantsQuery.data ?? []).map((tenant: Tenant) => {
-                    const eligibility = eligibilityByTenantId.get(tenant.id);
-                    const blockedReasons = eligibility?.blocked_reasons ?? [];
-
-                    return (
-                      <TableRow key={tenant.id} hover>
-                        <TableCell padding="checkbox">
-                          <Checkbox
-                            checked={isTenantSelected(tenant.id)}
-                            onChange={(event) => toggleTenant(tenant.id, event.target.checked)}
-                            disabled={
-                              tenant.is_archived ||
-                              (eligibility !== undefined && !eligibility.can_call_now)
-                            }
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Typography variant="subtitle2">
-                            {[tenant.first_name, tenant.last_name].filter(Boolean).join(" ")}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            #{tenant.id}
-                          </Typography>
-                        </TableCell>
-                        <TableCell>{tenant.phone_number}</TableCell>
-                        <TableCell>{tenant.days_late}</TableCell>
-                        <TableCell>
-                          <Stack spacing={0.5}>
-                            <Chip
-                              size="small"
-                              label={
-                                !eligibility
-                                  ? "Unknown"
-                                  : eligibility.can_call_now
-                                    ? "Ready"
-                                    : "Blocked"
-                              }
-                              color={
-                                !eligibility
-                                  ? "default"
-                                  : eligibility.can_call_now
-                                    ? "success"
-                                    : "warning"
-                              }
-                              variant="outlined"
-                            />
-                            {blockedReasons.length > 0 ? (
-                              <Typography variant="caption" color="text.secondary">
-                                {blockedReasons.join(", ")}
-                              </Typography>
-                            ) : null}
-                          </Stack>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                  {!tenantsQuery.isLoading && (tenantsQuery.data?.length ?? 0) === 0 ? (
+                  {paginatedTenantRows.map((tenant: Tenant) => (
+                    <TableRow key={tenant.id} hover>
+                      <TableCell padding="checkbox">
+                        <Checkbox
+                          checked={isTenantSelected(tenant.id)}
+                          onChange={(event) => toggleTenant(tenant.id, event.target.checked)}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="subtitle2">
+                          {[tenant.first_name, tenant.last_name].filter(Boolean).join(" ")}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          #{tenant.id}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>{tenant.phone_number}</TableCell>
+                      <TableCell>{tenant.days_late}</TableCell>
+                    </TableRow>
+                  ))}
+                  {!tenantsQuery.isLoading && sortedTenantRows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={5}>
+                      <TableCell colSpan={4}>
                         <Box sx={{ py: 3, textAlign: "center" }}>
                           <Typography color="text.secondary">
                             No tenants available for this scope.
@@ -393,91 +421,26 @@ export function OutboundCallsPage() {
               </Table>
             </TableContainer>
 
-            <Stack spacing={1.5}>
-              <Alert severity="info" sx={{ py: 0.75 }}>
-                Quick mode: use default assistant and phone number, then start real calls for selected eligible tenants.
-              </Alert>
-
-              <Box>
-                <Button
-                  variant="text"
-                  color="inherit"
-                  onClick={() => setShowAdvancedDispatch((currentValue) => !currentValue)}
-                  disabled={dispatchMutation.isPending}
-                >
-                  {showAdvancedDispatch ? "Hide advanced settings" : "Show advanced settings"}
-                </Button>
+            {totalTenantPages > 1 ? (
+              <Box sx={{ display: "flex", justifyContent: "center" }}>
+                <Pagination
+                  count={totalTenantPages}
+                  page={tenantPage}
+                  onChange={(_event, nextPage) => setTenantPage(nextPage)}
+                  color="primary"
+                  shape="rounded"
+                />
               </Box>
+            ) : null}
 
-              <Collapse in={showAdvancedDispatch}>
-                <Stack spacing={1.5} sx={{ pt: 1 }}>
-                  <Box
-                    sx={{
-                      display: "grid",
-                      gap: 1.5,
-                      gridTemplateColumns: {
-                        xs: "1fr",
-                        xl: "minmax(0, 1fr) minmax(0, 1fr) 190px",
-                      },
-                      alignItems: "start",
-                    }}
-                  >
-                    <TextField
-                      label="Assistant ID (optional)"
-                      value={assistantId}
-                      onChange={(event) => setAssistantId(event.target.value)}
-                      fullWidth
-                    />
-                    <TextField
-                      label="Phone Number ID (optional)"
-                      value={phoneNumberId}
-                      onChange={(event) => setPhoneNumberId(event.target.value)}
-                      fullWidth
-                    />
-                    <TextField
-                      label="Max tenants"
-                      type="number"
-                      value={maxTenants}
-                      onChange={(event) => setMaxTenants(event.target.value)}
-                      inputProps={{ min: 1, max: 50, step: 1 }}
-                      fullWidth
-                    />
-                  </Box>
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={dryRun}
-                        onChange={(event) => setDryRun(event.target.checked)}
-                      />
-                    }
-                    label="Dry run (test only, no real calls)"
-                  />
-                </Stack>
-              </Collapse>
-
-              <Stack
-                direction={{ xs: "column", sm: "row" }}
-                justifyContent="space-between"
-                alignItems={{ xs: "stretch", sm: "center" }}
-                spacing={1}
-              >
-                <Typography variant="body2" color="text.secondary">
-                  Blocked tenants are skipped automatically.
-                </Typography>
-                <Button
-                  variant="contained"
-                  onClick={() => dispatchMutation.mutate()}
-                  disabled={!canEditCurrentScope || !scope.propertyId || dispatchMutation.isPending}
-                  sx={{ width: { xs: "100%", sm: "auto" }, minWidth: { sm: 190 } }}
-                >
-                  {dispatchMutation.isPending
-                    ? "Dispatching..."
-                    : showAdvancedDispatch && dryRun
-                      ? "Run test job"
-                      : "Start calling selected tenants"}
-                </Button>
-              </Stack>
-            </Stack>
+            <Button
+              variant="contained"
+              onClick={() => dispatchMutation.mutate()}
+              disabled={!canEditCurrentScope || !scope.propertyId || dispatchMutation.isPending}
+              sx={{ width: { xs: "100%", sm: "auto" }, minWidth: { sm: 190 } }}
+            >
+              {dispatchMutation.isPending ? "Starting..." : "Start calls"}
+            </Button>
           </Stack>
         </SectionCard>
 
@@ -490,13 +453,13 @@ export function OutboundCallsPage() {
                   <TableRow>
                     <TableCell>Created</TableCell>
                     <TableCell>Status</TableCell>
-                    <TableCell>Mode</TableCell>
-                    <TableCell>Result</TableCell>
+                    <TableCell>Selected</TableCell>
+                    <TableCell>Started</TableCell>
                     <TableCell align="right">Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(jobsQuery.data ?? []).map((job) => (
+                  {paginatedJobRows.map((job) => (
                     <TableRow key={job.id} hover>
                       <TableCell>{new Date(job.created_at).toLocaleString()}</TableCell>
                       <TableCell>
@@ -507,20 +470,19 @@ export function OutboundCallsPage() {
                           variant="outlined"
                         />
                       </TableCell>
-                      <TableCell>{job.dry_run ? "Dry run" : "Live"}</TableCell>
+                      <TableCell>{getSelectedTenantsCount(job)}</TableCell>
                       <TableCell>
-                        <Typography variant="body2">
-                          Candidates: {job.total_candidates ?? "N/A"}
-                        </Typography>
-                        <Typography variant="body2">
-                          Eligible: {job.eligible_count ?? job.result_summary?.eligible_tenant_ids?.length ?? 0}
-                        </Typography>
-                        <Typography variant="body2">
-                          Blocked: {job.blocked_count ?? job.result_summary?.blocked?.length ?? 0}
-                        </Typography>
-                        <Typography variant="body2">
-                          Dispatched: {job.result_summary?.dispatched_calls?.length ?? 0}
-                        </Typography>
+                        <Typography variant="body2">{getStartedCallsCount(job)}</Typography>
+                        {getDispatchErrorCount(job) > 0 ? (
+                          <Typography variant="caption" color="error.main">
+                            Errors: {getDispatchErrorCount(job)}
+                          </Typography>
+                        ) : null}
+                        {job.dry_run ? (
+                          <Typography variant="caption" color="text.secondary">
+                            Test run
+                          </Typography>
+                        ) : null}
                       </TableCell>
                       <TableCell align="right">
                         <Button
@@ -535,7 +497,7 @@ export function OutboundCallsPage() {
                       </TableCell>
                     </TableRow>
                   ))}
-                  {!jobsQuery.isLoading && (jobsQuery.data?.length ?? 0) === 0 ? (
+                  {!jobsQuery.isLoading && jobRows.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={5}>
                         <Box sx={{ py: 3, textAlign: "center" }}>
@@ -547,6 +509,17 @@ export function OutboundCallsPage() {
                 </TableBody>
               </Table>
             </TableContainer>
+            {totalJobPages > 1 ? (
+              <Box sx={{ display: "flex", justifyContent: "center" }}>
+                <Pagination
+                  count={totalJobPages}
+                  page={jobsPage}
+                  onChange={(_event, nextPage) => setJobsPage(nextPage)}
+                  color="primary"
+                  shape="rounded"
+                />
+              </Box>
+            ) : null}
           </Stack>
         </SectionCard>
       </Box>
@@ -568,16 +541,19 @@ export function OutboundCallsPage() {
                 Job #{selectedJob.id} created {new Date(selectedJob.created_at).toLocaleString()}
               </Typography>
               <Typography variant="body2">
-                Mode: {selectedJob.dry_run ? "Dry run" : "Live"} | Trigger: {selectedJob.trigger_mode}
+                Status: {selectedJob.status || "N/A"} | Mode: {selectedJob.dry_run ? "Test" : "Live"}
               </Typography>
               <Typography variant="body2">
-                Candidates: {selectedJob.total_candidates ?? "N/A"} | Eligible: {selectedJob.eligible_count ?? "N/A"} | Blocked: {selectedJob.blocked_count ?? "N/A"}
+                Selected tenants: {getSelectedTenantsCount(selectedJob)}
               </Typography>
               <Typography variant="body2">
-                Dispatched: {selectedJob.result_summary?.dispatched_calls?.length ?? 0}
+                Calls started: {getStartedCallsCount(selectedJob)}
               </Typography>
               <Typography variant="body2">
-                Dispatch note: {selectedJob.result_summary?.dispatch_note ?? "N/A"}
+                Errors: {getDispatchErrorCount(selectedJob)}
+              </Typography>
+              <Typography variant="body2">
+                Note: {String(getJobResultSummary(selectedJob).dispatch_note ?? "N/A")}
               </Typography>
               <Box>
                 <Button
@@ -587,9 +563,7 @@ export function OutboundCallsPage() {
                     setShowTechnicalJobDetails((currentValue) => !currentValue)
                   }
                 >
-                  {showTechnicalJobDetails
-                    ? "Hide technical details"
-                    : "Show technical details"}
+                  {showTechnicalJobDetails ? "Hide raw data" : "Show raw data"}
                 </Button>
               </Box>
               <Collapse in={showTechnicalJobDetails}>
@@ -625,7 +599,7 @@ export function OutboundCallsPage() {
                       fontSize: 12,
                     }}
                   >
-                    {JSON.stringify(selectedJob.result_summary ?? {}, null, 2)}
+                    {JSON.stringify(getJobResultSummary(selectedJob), null, 2)}
                   </Box>
                 </Stack>
               </Collapse>
