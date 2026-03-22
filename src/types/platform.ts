@@ -55,7 +55,13 @@ export type CallLog = {
   property_id: number;
   tenant_id: number;
   vapi_call_id: string | null;
+  call_status: string | null;
   call_outcome: string | null;
+  call_summary: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  ended_reason: string | null;
+  provider_cost: number | null;
   transcript: string | null;
   recording_url: string | null;
   opt_out_detected: boolean;
@@ -67,8 +73,9 @@ export type CallLog = {
   sms_message_sid: string | null;
   sms_error_message: string | null;
   sms_sent_at: string | null;
-  raw_payload: string | null;
+  raw_payload: unknown | null;
   created_at: string;
+  updated_at: string;
 };
 
 export type TenantEligibility = {

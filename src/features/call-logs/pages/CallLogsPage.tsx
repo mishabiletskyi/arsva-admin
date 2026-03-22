@@ -35,6 +35,64 @@ import { useAuth } from "../../auth/AuthContext";
 import type { CallLog, Tenant } from "../../../types/platform";
 import { useClientPagination } from "../../../utils/useClientPagination";
 
+function formatDateTime(value: string | null | undefined, fallback = "N/A"): string {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return fallback;
+  }
+
+  return parsed.toLocaleString();
+}
+
+function formatLabel(value: string | null | undefined, fallback = "N/A"): string {
+  if (!value) {
+    return fallback;
+  }
+
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatDuration(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "N/A";
+  }
+
+  return `${value}s`;
+}
+
+function formatProviderCost(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "N/A";
+  }
+
+  return `$${value.toFixed(4)}`;
+}
+
+function formatRawPayload(rawPayload: unknown): string {
+  if (!rawPayload) {
+    return "No raw payload provided.";
+  }
+
+  if (typeof rawPayload === "string") {
+    return rawPayload;
+  }
+
+  try {
+    return JSON.stringify(rawPayload, null, 2);
+  } catch {
+    return "Raw payload is present but could not be formatted.";
+  }
+}
+
 function FieldRow({
   label,
   value,
@@ -73,6 +131,24 @@ function getSmsTone(callLog: CallLog): "default" | "success" | "warning" | "erro
 
   if (status) {
     return "warning";
+  }
+
+  return "default";
+}
+
+function getCallStatusTone(callStatus: string | null): "default" | "success" | "warning" | "error" {
+  const status = (callStatus || "").toLowerCase();
+
+  if (status === "ended" || status === "completed") {
+    return "success";
+  }
+
+  if (status === "queued" || status === "ringing" || status === "in_progress") {
+    return "warning";
+  }
+
+  if (status.includes("fail") || status.includes("error") || status === "canceled") {
+    return "error";
   }
 
   return "default";
@@ -211,12 +287,12 @@ export function CallLogsPage() {
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>Created</TableCell>
+                <TableCell>Date</TableCell>
                 <TableCell>Tenant</TableCell>
                 <TableCell>Outcome</TableCell>
-                <TableCell>Script</TableCell>
-                <TableCell>Duration</TableCell>
                 <TableCell>Status</TableCell>
+                <TableCell>Summary</TableCell>
+                <TableCell>Duration</TableCell>
                 <TableCell>SMS</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
@@ -224,25 +300,33 @@ export function CallLogsPage() {
             <TableBody>
               {paginatedCallLogs.map((callLog) => (
                 <TableRow key={callLog.id} hover>
-                  <TableCell>{new Date(callLog.created_at).toLocaleString()}</TableCell>
+                  <TableCell>
+                    {formatDateTime(callLog.started_at ?? callLog.created_at)}
+                  </TableCell>
                   <TableCell>
                     {tenantMap.get(callLog.tenant_id) ?? `Tenant #${callLog.tenant_id}`}
-                  </TableCell>
-                  <TableCell>{callLog.call_outcome || "N/A"}</TableCell>
-                  <TableCell>{callLog.script_version || "N/A"}</TableCell>
-                  <TableCell>
-                    {callLog.duration_seconds === null
-                      ? "N/A"
-                      : `${callLog.duration_seconds}s`}
                   </TableCell>
                   <TableCell>
                     <Chip
                       size="small"
-                      label={callLog.opt_out_detected ? "Opt-out detected" : "Normal"}
-                      color={callLog.opt_out_detected ? "warning" : "success"}
+                      label={formatLabel(callLog.call_outcome, "Pending")}
                       variant="outlined"
                     />
                   </TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      label={formatLabel(callLog.call_status, "Queued")}
+                      color={getCallStatusTone(callLog.call_status)}
+                      variant="outlined"
+                    />
+                  </TableCell>
+                  <TableCell sx={{ maxWidth: 360 }}>
+                    <Typography variant="body2">
+                      {callLog.call_summary || "No summary yet"}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>{formatDuration(callLog.duration_seconds)}</TableCell>
                   <TableCell>
                     <Stack spacing={0.5} alignItems="flex-start">
                       <Chip
@@ -252,9 +336,7 @@ export function CallLogsPage() {
                         variant="outlined"
                       />
                       <Typography variant="caption" color="text.secondary">
-                        {callLog.sms_sent_at
-                          ? new Date(callLog.sms_sent_at).toLocaleString()
-                          : "No timestamp"}
+                        {formatDateTime(callLog.sms_sent_at, "No timestamp")}
                       </Typography>
                     </Stack>
                   </TableCell>
@@ -314,7 +396,7 @@ export function CallLogsPage() {
               >
                 <FieldRow
                   label="Created"
-                  value={new Date(selectedCallLog.created_at).toLocaleString()}
+                  value={formatDateTime(selectedCallLog.created_at)}
                 />
                 <FieldRow
                   label="Tenant"
@@ -324,24 +406,40 @@ export function CallLogsPage() {
                   }
                 />
                 <FieldRow
+                  label="Started"
+                  value={formatDateTime(selectedCallLog.started_at)}
+                />
+                <FieldRow
+                  label="Ended"
+                  value={formatDateTime(selectedCallLog.ended_at)}
+                />
+                <FieldRow
+                  label="Status"
+                  value={formatLabel(selectedCallLog.call_status, "Queued")}
+                />
+                <FieldRow
                   label="Outcome"
-                  value={selectedCallLog.call_outcome || "N/A"}
+                  value={formatLabel(selectedCallLog.call_outcome, "Pending")}
+                />
+                <FieldRow
+                  label="Ended Reason"
+                  value={formatLabel(selectedCallLog.ended_reason)}
+                />
+                <FieldRow
+                  label="Duration"
+                  value={formatDuration(selectedCallLog.duration_seconds)}
+                />
+                <FieldRow
+                  label="Expected Payment Date"
+                  value={selectedCallLog.expected_payment_date || "N/A"}
                 />
                 <FieldRow
                   label="Script Version"
                   value={selectedCallLog.script_version || "N/A"}
                 />
                 <FieldRow
-                  label="Duration"
-                  value={
-                    selectedCallLog.duration_seconds === null
-                      ? "N/A"
-                      : `${selectedCallLog.duration_seconds}s`
-                  }
-                />
-                <FieldRow
-                  label="Expected Payment Date"
-                  value={selectedCallLog.expected_payment_date || "N/A"}
+                  label="Provider Cost"
+                  value={formatProviderCost(selectedCallLog.provider_cost)}
                 />
                 <FieldRow
                   label="SMS Sent"
@@ -349,15 +447,11 @@ export function CallLogsPage() {
                 />
                 <FieldRow
                   label="SMS Status"
-                  value={selectedCallLog.sms_status || "N/A"}
+                  value={formatLabel(selectedCallLog.sms_status)}
                 />
                 <FieldRow
                   label="SMS Sent At"
-                  value={
-                    selectedCallLog.sms_sent_at
-                      ? new Date(selectedCallLog.sms_sent_at).toLocaleString()
-                      : "N/A"
-                  }
+                  value={formatDateTime(selectedCallLog.sms_sent_at)}
                 />
               </Stack>
 
@@ -375,6 +469,25 @@ export function CallLogsPage() {
                   color={selectedCallLog.opt_out_detected ? "warning" : "success"}
                 />
               </Stack>
+
+              <Box>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                  Call Summary
+                </Typography>
+                <Box
+                  sx={{
+                    p: 2,
+                    bgcolor: "rgba(15, 23, 42, 0.03)",
+                    border: "1px solid rgba(15, 23, 42, 0.08)",
+                    borderRadius: 2,
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  <Typography variant="body2">
+                    {selectedCallLog.call_summary || "No summary yet"}
+                  </Typography>
+                </Box>
+              </Box>
 
               <Box>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
@@ -416,7 +529,7 @@ export function CallLogsPage() {
                     {selectedCallLog.recording_url}
                   </Link>
                 ) : (
-                  <Typography variant="subtitle2">N/A</Typography>
+                  <Typography variant="subtitle2">No recording available yet.</Typography>
                 )}
               </Box>
 
@@ -434,7 +547,7 @@ export function CallLogsPage() {
                   }}
                 >
                   <Typography variant="body2">
-                    {selectedCallLog.transcript || "No transcript provided."}
+                    {selectedCallLog.transcript || "No transcript yet."}
                   </Typography>
                 </Box>
               </Box>
@@ -455,7 +568,7 @@ export function CallLogsPage() {
                     fontSize: 12,
                   }}
                 >
-                  {selectedCallLog.raw_payload || "No raw payload provided."}
+                  {formatRawPayload(selectedCallLog.raw_payload)}
                 </Box>
               </Box>
             </Stack>

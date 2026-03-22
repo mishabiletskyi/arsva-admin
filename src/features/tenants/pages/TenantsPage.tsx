@@ -89,6 +89,30 @@ function isE164PhoneNumber(value: string): boolean {
   return /^\+[1-9]\d{7,14}$/.test(value.trim());
 }
 
+function buildTenantPayloadFromRecord(tenant: Tenant) {
+  return {
+    organization_id: tenant.organization_id,
+    property_id: tenant.property_id,
+    external_id: tenant.external_id,
+    first_name: tenant.first_name,
+    last_name: tenant.last_name,
+    phone_number: tenant.phone_number,
+    property_name: tenant.property_name,
+    timezone: tenant.timezone,
+    rent_due_date: tenant.rent_due_date,
+    days_late: tenant.days_late,
+    consent_status: tenant.consent_status,
+    consent_timestamp: tenant.consent_timestamp,
+    consent_source: tenant.consent_source,
+    consent_document_version: tenant.consent_document_version,
+    opt_out_flag: tenant.opt_out_flag,
+    opt_out_timestamp: tenant.opt_out_timestamp,
+    eviction_status: tenant.eviction_status,
+    is_suppressed: tenant.is_suppressed,
+    notes: tenant.notes,
+  };
+}
+
 export function TenantsPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -232,6 +256,24 @@ export function TenantsPage() {
     },
   });
 
+  const markPaidMutation = useMutation({
+    mutationFn: (tenant: Tenant) =>
+      updateTenantRequest(tenant.id, {
+        ...buildTenantPayloadFromRecord(tenant),
+        days_late: 0,
+      }),
+    onSuccess: async () => {
+      setActionError("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["tenants"] }),
+        queryClient.invalidateQueries({ queryKey: ["outbound", "tenants"] }),
+      ]);
+    },
+    onError: (error) => {
+      setActionError(getApiErrorMessage(error, "Failed to mark tenant as paid."));
+    },
+  });
+
   const tenantRows = Array.isArray(tenantsQuery.data) ? tenantsQuery.data : [];
   const {
     page,
@@ -346,7 +388,7 @@ export function TenantsPage() {
       ) : null}
 
       <Alert severity="info" sx={{ mb: 3 }}>
-        Tenant removal is archive-based. Restore brings an archived tenant back. Call rules are managed on the Call Policy page.
+        Tenant removal is archive-based. Restore brings an archived tenant back. Use "Mark paid" to stop overdue-call targeting by setting days late to 0.
       </Alert>
 
       {actionError ? (
@@ -398,12 +440,17 @@ export function TenantsPage() {
                   <TableCell>{tenant.phone_number}</TableCell>
                   <TableCell>{tenant.days_late}</TableCell>
                   <TableCell>
-                    <Chip
-                      size="small"
-                      label={tenant.is_archived ? "Archived" : "Active"}
-                      color={tenant.is_archived ? "default" : "success"}
-                      variant={tenant.is_archived ? "outlined" : "filled"}
-                    />
+                    <Stack direction="row" spacing={1} flexWrap="wrap">
+                      <Chip
+                        size="small"
+                        label={tenant.is_archived ? "Archived" : "Active"}
+                        color={tenant.is_archived ? "default" : "success"}
+                        variant={tenant.is_archived ? "outlined" : "filled"}
+                      />
+                      {tenant.days_late <= 0 && !tenant.is_archived ? (
+                        <Chip size="small" label="Paid" color="default" variant="outlined" />
+                      ) : null}
+                    </Stack>
                   </TableCell>
                   <TableCell align="right">
                     <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap">
@@ -414,6 +461,20 @@ export function TenantsPage() {
                       >
                         Edit
                       </Button>
+                      {!tenant.is_archived ? (
+                        <Button
+                          size="small"
+                          color="inherit"
+                          onClick={() => markPaidMutation.mutate(tenant)}
+                          disabled={
+                            !canEditCurrentScope ||
+                            markPaidMutation.isPending ||
+                            tenant.days_late <= 0
+                          }
+                        >
+                          Mark paid
+                        </Button>
+                      ) : null}
                       {tenant.is_archived ? (
                         <Button
                           size="small"

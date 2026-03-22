@@ -55,16 +55,46 @@ function getJobResultSummary(job: OutboundCallJob): Record<string, unknown> {
   return job.result_summary as Record<string, unknown>;
 }
 
-function getJobStatusTone(status: string | null): "default" | "warning" | "success" | "error" {
-  if (status === "completed" || status === "dispatched") {
+function getNormalizedJobStatus(job: OutboundCallJob): "queued" | "processing" | "completed" | "failed" {
+  const status = (job.status || "").toLowerCase();
+  const startedCallsCount = getStartedCallsCount(job);
+  const dispatchErrorCount = getDispatchErrorCount(job);
+  const dispatchNote = String(getJobResultSummary(job).dispatch_note ?? "").trim();
+
+  if (status === "failed") {
+    return "failed";
+  }
+
+  if (
+    status === "completed" ||
+    status === "dispatched" ||
+    status === "previewed" ||
+    startedCallsCount > 0 ||
+    dispatchErrorCount > 0 ||
+    dispatchNote.length > 0
+  ) {
+    return "completed";
+  }
+
+  if (status === "processing") {
+    return "processing";
+  }
+
+  return "queued";
+}
+
+function getJobStatusTone(job: OutboundCallJob): "default" | "warning" | "success" | "error" {
+  const normalizedStatus = getNormalizedJobStatus(job);
+
+  if (normalizedStatus === "completed") {
     return "success";
   }
 
-  if (status === "processing" || status === "queued") {
+  if (normalizedStatus === "processing" || normalizedStatus === "queued") {
     return "warning";
   }
 
-  if (status === "failed") {
+  if (normalizedStatus === "failed") {
     return "error";
   }
 
@@ -136,7 +166,7 @@ export function OutboundCallsPage() {
   });
 
   const tenantRows = (Array.isArray(tenantsQuery.data) ? tenantsQuery.data : []).filter(
-    (tenant) => !tenant.is_archived
+    (tenant) => !tenant.is_archived && !tenant.is_suppressed && tenant.days_late > 0
   );
   const jobRows = Array.isArray(jobsQuery.data) ? jobsQuery.data : [];
   const sortedTenantRows = [...tenantRows].sort((leftTenant, rightTenant) => {
@@ -326,7 +356,7 @@ export function OutboundCallsPage() {
       ) : null}
 
       <Alert severity="info" sx={{ mb: 3 }}>
-        Pick tenants and start calls. Call rules belong on the Call Policy page, not in extra frontend statuses.
+        Only tenants with days late above 0 and no suppression appear here. When a tenant pays, mark them paid in Tenants and they drop out of this list.
       </Alert>
 
       <Box
@@ -411,7 +441,7 @@ export function OutboundCallsPage() {
                       <TableCell colSpan={4}>
                         <Box sx={{ py: 3, textAlign: "center" }}>
                           <Typography color="text.secondary">
-                            No tenants available for this scope.
+                            No overdue tenants available for this scope.
                           </Typography>
                         </Box>
                       </TableCell>
@@ -465,8 +495,8 @@ export function OutboundCallsPage() {
                       <TableCell>
                         <Chip
                           size="small"
-                          label={job.status || "N/A"}
-                          color={getJobStatusTone(job.status)}
+                          label={getNormalizedJobStatus(job)}
+                          color={getJobStatusTone(job)}
                           variant="outlined"
                         />
                       </TableCell>
@@ -541,7 +571,7 @@ export function OutboundCallsPage() {
                 Job #{selectedJob.id} created {new Date(selectedJob.created_at).toLocaleString()}
               </Typography>
               <Typography variant="body2">
-                Status: {selectedJob.status || "N/A"} | Mode: {selectedJob.dry_run ? "Test" : "Live"}
+                Status: {getNormalizedJobStatus(selectedJob)} | Mode: {selectedJob.dry_run ? "Test" : "Live"}
               </Typography>
               <Typography variant="body2">
                 Selected tenants: {getSelectedTenantsCount(selectedJob)}
@@ -568,6 +598,9 @@ export function OutboundCallsPage() {
               </Box>
               <Collapse in={showTechnicalJobDetails}>
                 <Stack spacing={2} sx={{ pt: 1 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Raw backend status: {selectedJob.status || "N/A"}
+                  </Typography>
                   <Box>
                     <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
                       Filters
